@@ -388,7 +388,7 @@ public class PackSync implements IModFileCandidateLocator {
 						var ext = exti == -1 ? "" : filename.substring(exti);
 						var downloadPath = repository.resolve(checksum.substring(0, 2)).resolve(checksum + ext);
 
-						if (repositoryFile == null || download(httpClient, requestBuilderBase, pipeline, downloadPath, filename + " (" + checksum + ")", remoteFile.fileInfo().size(), remoteFile.url(), remoteFile.gzip())) {
+						if (repositoryFile != null || download(httpClient, requestBuilderBase, pipeline, downloadPath, filename + " (" + checksum + ")", remoteFile.fileInfo().size(), remoteFile.url(), remoteFile.gzip())) {
 							var file = new RepositoryFile(downloadPath, remoteFile.fileInfo());
 							repositoryFiles.put(file.fileInfo().checksum(), file);
 
