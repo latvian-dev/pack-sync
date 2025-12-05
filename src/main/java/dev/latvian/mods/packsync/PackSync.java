@@ -382,13 +382,13 @@ public class PackSync implements IModFileCandidateLocator {
 
 				var repositoryFile = repositoryFiles.get(checksum);
 
-				if (repositoryFile == null) {
+				if (repositoryFile == null || !repositoryFile.fileInfo().equals(remoteFile.fileInfo())) {
 					futures.add(CompletableFuture.runAsync(() -> {
 						var exti = filename.lastIndexOf('.');
 						var ext = exti == -1 ? "" : filename.substring(exti);
 						var downloadPath = repository.resolve(checksum.substring(0, 2)).resolve(checksum + ext);
 
-						if (download(httpClient, requestBuilderBase, pipeline, downloadPath, filename + " (" + checksum + ")", remoteFile.fileInfo().size(), remoteFile.url(), remoteFile.gzip())) {
+						if (repositoryFile == null || download(httpClient, requestBuilderBase, pipeline, downloadPath, filename + " (" + checksum + ")", remoteFile.fileInfo().size(), remoteFile.url(), remoteFile.gzip())) {
 							var file = new RepositoryFile(downloadPath, remoteFile.fileInfo());
 							repositoryFiles.put(file.fileInfo().checksum(), file);
 
