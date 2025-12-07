@@ -47,6 +47,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
 
 public class PackSync implements IModFileCandidateLocator {
@@ -218,9 +219,20 @@ public class PackSync implements IModFileCandidateLocator {
 			}
 		}
 
+		var localRepository = FMLPaths.GAMEDIR.get().resolve("local").resolve("pack-sync");
+
+		if (Files.notExists(localRepository)) {
+			try {
+				Files.createDirectories(localRepository);
+			} catch (Exception ex) {
+				pipeline.addIssue(ModLoadingIssue.error("Failed to create Pack Sync local repository directory!").withCause(ex).withAffectedPath(localRepository));
+				return;
+			}
+		}
+
 		var repositoryFiles = new ConcurrentHashMap<String, RepositoryFile>();
 
-		try (var listStream = Files.walk(repository)) {
+		try (var listStream = Stream.concat(Files.walk(repository), Files.walk(localRepository))) {
 			listStream.filter(Files::isRegularFile).forEach(file -> {
 				var filename = file.getFileName().toString();
 
@@ -331,19 +343,6 @@ public class PackSync implements IModFileCandidateLocator {
 
 		LOGGER.info("Update found! '" + packVersion + "' -> '" + newVersion + "'");
 
-		for (int i = 0; i < 256; i++) {
-			var dir = repository.resolve("%02x".formatted(i));
-
-			if (Files.notExists(dir) || !Files.isDirectory(dir)) {
-				try {
-					Files.createDirectory(dir);
-				} catch (Exception ex) {
-					pipeline.addIssue(ModLoadingIssue.error("Failed to create Pack Sync repository directory!").withCause(ex).withAffectedPath(dir));
-					return;
-				}
-			}
-		}
-
 		var requestJson = new JsonObject();
 		requestJson.addProperty("pack_version", packVersion);
 		requestJson.addProperty("mc_version", FMLLoader.versionInfo().mcVersion());
@@ -389,10 +388,21 @@ public class PackSync implements IModFileCandidateLocator {
 				var repositoryFile = repositoryFiles.get(checksum);
 
 				if (repositoryFile == null || !repositoryFile.fileInfo().equals(remoteFile.fileInfo())) {
+					var dir = (remoteFile.local() ? localRepository : repository).resolve(checksum.substring(0, 2));
+
+					if (Files.notExists(dir) || !Files.isDirectory(dir)) {
+						try {
+							Files.createDirectory(dir);
+						} catch (Exception ex) {
+							pipeline.addIssue(ModLoadingIssue.error("Failed to create Pack Sync repository directory!").withCause(ex).withAffectedPath(dir));
+							return;
+						}
+					}
+
 					futures.add(CompletableFuture.runAsync(() -> {
 						var exti = filename.lastIndexOf('.');
 						var ext = exti == -1 ? "" : filename.substring(exti);
-						var downloadPath = repository.resolve(checksum.substring(0, 2)).resolve(checksum + ext);
+						var downloadPath = dir.resolve(checksum + ext);
 
 						if (repositoryFile != null || download(httpClient, requestBuilderBase, pipeline, downloadPath, filename + " (" + checksum + ")", remoteFile.fileInfo().size(), remoteFile.url(), remoteFile.gzip())) {
 							var file = new RepositoryFile(downloadPath, remoteFile.fileInfo());

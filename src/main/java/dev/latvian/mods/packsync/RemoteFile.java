@@ -11,7 +11,8 @@ public record RemoteFile(
 	String url,
 	String path,
 	boolean lazy,
-	boolean gzip
+	boolean gzip,
+	boolean local
 ) {
 	public RemoteFile(JsonObject json) {
 		this(
@@ -19,12 +20,9 @@ public record RemoteFile(
 			json.get("url").getAsString(),
 			json.has("path") ? json.get("path").getAsString() : "",
 			json.has("lazy") && json.get("lazy").getAsBoolean(),
-			json.has("gzip") && json.get("gzip").getAsBoolean()
+			json.has("gzip") && json.get("gzip").getAsBoolean(),
+			json.has("local") && json.get("local").getAsBoolean()
 		);
-	}
-
-	public RemoteFile(String filename, long size) {
-		this(new FileInfo(filename, size), "", "", false, false);
 	}
 
 	public boolean replace(Path path, IIssueReporting issues) {
