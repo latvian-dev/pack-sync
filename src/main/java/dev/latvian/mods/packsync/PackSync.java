@@ -255,7 +255,6 @@ public class PackSync implements IModFileCandidateLocator {
 		LOGGER.info("Found %,d local files in %,d ms".formatted(repositoryFiles.size(), now - startTime));
 		startTime = now;
 
-		var packVersion = info.get("version").getAsString();
 		var api = config.get("api").getAsString();
 
 		while (api.endsWith("/")) {
@@ -265,7 +264,7 @@ public class PackSync implements IModFileCandidateLocator {
 		var packCode = config.get("pack_code").getAsString();
 		var auth = info.get("auth").getAsString();
 
-		if (auth.startsWith("%") && auth.endsWith("%")) {
+		while (auth.length() >= 3 && auth.startsWith("%") && auth.endsWith("%")) {
 			auth = Optional.ofNullable(System.getenv(auth.substring(1, auth.length() - 1))).orElse("");
 		}
 
@@ -297,7 +296,14 @@ public class PackSync implements IModFileCandidateLocator {
 			ignoredMods.add(e.getAsString());
 		}
 
-		if (info.get("pause_updates").getAsBoolean()) {
+		var packVersion = info.get("version").getAsString();
+
+		if (!packVersion.isEmpty() && !checkModsExist(repositoryFiles, info, ignoredMods)) {
+			LOGGER.info("Found missing or broken repository files, forcing an update...");
+			packVersion = "";
+		}
+
+		if (!packVersion.isEmpty() && info.get("pause_updates").getAsBoolean()) {
 			LOGGER.info("Pack updates are paused ('" + packVersion + "')!");
 			loadMods(repositoryFiles, info, ignoredMods, pipeline);
 
@@ -594,6 +600,29 @@ public class PackSync implements IModFileCandidateLocator {
 
 		LOGGER.info("Pack updated '" + packVersion + "' -> '" + newVersion + "'!");
 		loadMods(repositoryFiles, info, ignoredMods, pipeline);
+	}
+
+	private static boolean checkModsExist(Map<String, RepositoryFile> repositoryFiles, JsonObject info, Set<String> ignoredMods) {
+		for (var entry : info.get("mods").getAsJsonArray()) {
+			try {
+				var fileInfo = new FileInfo(entry.getAsJsonObject());
+				var artifact = fileInfo.artifact();
+
+				if (!artifact.isEmpty() && ignoredMods.contains(artifact)) {
+					continue;
+				}
+
+				var repositoryFile = repositoryFiles.get(fileInfo.checksum());
+
+				if (repositoryFile == null) {
+					return false;
+				}
+			} catch (Exception ex) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	private static void loadMods(Map<String, RepositoryFile> repositoryFiles, JsonObject info, Set<String> ignoredMods, IDiscoveryPipeline pipeline) {
