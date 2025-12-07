@@ -35,6 +35,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -160,51 +161,62 @@ public class PackSync implements IModFileCandidateLocator {
 
 		JsonObject config;
 
-		try (var configReader = Files.newBufferedReader(configFile)) {
-			config = gson.fromJson(configReader, JsonObject.class);
+		try (var reader = Files.newBufferedReader(configFile)) {
+			config = gson.fromJson(reader, JsonObject.class);
 		} catch (Exception ex) {
 			pipeline.addIssue(ModLoadingIssue.error("Failed to read Pack Sync config file!").withCause(ex).withAffectedPath(configFile));
 			return;
 		}
 
-		var infoFile = FMLPaths.GAMEDIR.get().resolve("pack-sync-info.json");
-		JsonObject info;
-		boolean updateInfo = false;
+		var localPackSyncDirectory = FMLPaths.GAMEDIR.get().resolve("local").resolve("pack-sync");
 
-		if (Files.notExists(infoFile)) {
-			info = new JsonObject();
-		} else {
-			try (var infoReader = Files.newBufferedReader(infoFile)) {
-				info = gson.fromJson(infoReader, JsonObject.class);
+		if (Files.notExists(localPackSyncDirectory)) {
+			try {
+				Files.createDirectories(localPackSyncDirectory);
 			} catch (Exception ex) {
-				pipeline.addIssue(ModLoadingIssue.error("Failed to read Pack Sync info file!").withCause(ex).withAffectedPath(infoFile));
+				pipeline.addIssue(ModLoadingIssue.error("Failed to create Pack Sync local directory!").withCause(ex).withAffectedPath(localPackSyncDirectory));
 				return;
 			}
 		}
 
-		if (!info.has("version")) {
-			info.addProperty("version", "");
-			updateInfo = true;
+		var localConfigFile = localPackSyncDirectory.resolve("config.json");
+
+		JsonObject localConfigJson;
+
+		if (Files.notExists(localConfigFile)) {
+			localConfigJson = new JsonObject();
+		} else {
+			try (var reader = Files.newBufferedReader(localConfigFile)) {
+				localConfigJson = gson.fromJson(reader, JsonObject.class);
+			} catch (Exception ex) {
+				pipeline.addIssue(ModLoadingIssue.error("Failed to read Pack Sync local config file!").withCause(ex).withAffectedPath(localConfigFile));
+				return;
+			}
 		}
 
-		if (!info.has("auth")) {
-			info.addProperty("auth", "%PACK_SYNC_TOKEN%");
-			updateInfo = true;
-		}
+		{
+			boolean updateLocalConfigJson = false;
 
-		if (!info.has("pause_updates")) {
-			info.addProperty("pause_updates", false);
-			updateInfo = true;
-		}
+			if (!localConfigJson.has("auth")) {
+				localConfigJson.addProperty("auth", "%PACK_SYNC_TOKEN%");
+				updateLocalConfigJson = true;
+			}
 
-		if (!info.has("ignored_mods")) {
-			info.add("ignored_mods", new JsonArray());
-			updateInfo = true;
-		}
+			if (!localConfigJson.has("pause_updates")) {
+				localConfigJson.addProperty("pause_updates", false);
+				updateLocalConfigJson = true;
+			}
 
-		if (!info.has("mods")) {
-			info.add("mods", new JsonArray());
-			updateInfo = true;
+			if (!localConfigJson.has("ignored_mods")) {
+				localConfigJson.add("ignored_mods", new JsonArray());
+				updateLocalConfigJson = true;
+			}
+
+			if (updateLocalConfigJson) {
+				try (var writer = Files.newBufferedWriter(localConfigFile)) {
+					gson.toJson(localConfigJson, writer);
+				}
+			}
 		}
 
 		var repositoryEnv = Optional.ofNullable(System.getenv("PACK_SYNC_REPO_DIRECTORY")).orElse("");
@@ -219,7 +231,7 @@ public class PackSync implements IModFileCandidateLocator {
 			}
 		}
 
-		var localRepository = FMLPaths.GAMEDIR.get().resolve("local").resolve("pack-sync");
+		var localRepository = localPackSyncDirectory.resolve("repository");
 
 		if (Files.notExists(localRepository)) {
 			try {
@@ -274,7 +286,7 @@ public class PackSync implements IModFileCandidateLocator {
 		}
 
 		var packCode = config.get("pack_code").getAsString();
-		var auth = info.get("auth").getAsString();
+		var auth = localConfigJson.get("auth").getAsString();
 
 		while (auth.length() >= 3 && auth.startsWith("%") && auth.endsWith("%")) {
 			auth = Optional.ofNullable(System.getenv(auth.substring(1, auth.length() - 1))).orElse("");
@@ -302,42 +314,51 @@ public class PackSync implements IModFileCandidateLocator {
 			return;
 		}
 
+		var versionFile = localPackSyncDirectory.resolve("version.json");
+
+		var packVersion = "";
+		var modList = new ArrayList<FileInfo>();
+
+		if (Files.exists(versionFile)) {
+			try (var reader = Files.newBufferedReader(versionFile)) {
+				var versionJson = gson.fromJson(reader, JsonObject.class);
+				packVersion = versionJson.has("version") ? versionJson.get("version").getAsString() : "";
+
+				if (versionJson.get("mods") instanceof JsonArray modsJson) {
+					for (var entry : modsJson) {
+						try {
+							modList.add(new FileInfo(entry.getAsJsonObject()));
+						} catch (Exception ex) {
+							pipeline.addIssue(ModLoadingIssue.error("Pack Sync error loading mod %s!", entry.toString()).withCause(ex));
+						}
+					}
+				}
+			} catch (Exception ex) {
+				pipeline.addIssue(ModLoadingIssue.error("Failed to read Pack Sync version file!").withCause(ex).withAffectedPath(versionFile));
+				return;
+			}
+		}
+
 		var ignoredMods = new HashSet<String>();
 
-		for (var e : info.get("ignored_mods").getAsJsonArray()) {
+		for (var e : localConfigJson.get("ignored_mods").getAsJsonArray()) {
 			ignoredMods.add(e.getAsString());
 		}
 
-		var packVersion = info.get("version").getAsString();
-
-		if (!packVersion.isEmpty() && !checkModsExist(repositoryFiles, info, ignoredMods)) {
+		if (!packVersion.isEmpty() && !checkModsExist(repositoryFiles, modList, ignoredMods)) {
 			LOGGER.info("Found missing or broken repository files, forcing an update...");
 			packVersion = "";
 		}
 
-		if (!packVersion.isEmpty() && info.get("pause_updates").getAsBoolean()) {
+		if (!packVersion.isEmpty() && localConfigJson.get("pause_updates").getAsBoolean()) {
 			LOGGER.info("Pack updates are paused ('" + packVersion + "')!");
-			loadMods(repositoryFiles, info, ignoredMods, pipeline);
-
-			if (updateInfo) {
-				try (var writer = Files.newBufferedWriter(infoFile)) {
-					gson.toJson(info, writer);
-				}
-			}
-
+			loadMods(repositoryFiles, modList, ignoredMods, pipeline);
 			return;
 		}
 
 		if (newVersion.equals(packVersion)) {
 			LOGGER.info("Pack is up to date ('" + packVersion + "')!");
-			loadMods(repositoryFiles, info, ignoredMods, pipeline);
-
-			if (updateInfo) {
-				try (var writer = Files.newBufferedWriter(infoFile)) {
-					gson.toJson(info, writer);
-				}
-			}
-
+			loadMods(repositoryFiles, modList, ignoredMods, pipeline);
 			return;
 		}
 
@@ -357,7 +378,7 @@ public class PackSync implements IModFileCandidateLocator {
 
 		if (syncRequest.statusCode() / 100 != 2) {
 			pipeline.addIssue(ModLoadingIssue.warning("Failed to update the modpack with error %d - %s!", syncRequest.statusCode(), syncRequest.body()));
-			loadMods(repositoryFiles, info, ignoredMods, pipeline);
+			loadMods(repositoryFiles, modList, ignoredMods, pipeline);
 			return;
 		}
 
@@ -378,7 +399,7 @@ public class PackSync implements IModFileCandidateLocator {
 		}
 
 		if (syncJson.has("mods")) {
-			var newModList = new JsonArray();
+			modList.clear();
 
 			for (var entry : syncJson.get("mods").getAsJsonArray()) {
 				var remoteFile = new RemoteFile(entry.getAsJsonObject());
@@ -409,7 +430,7 @@ public class PackSync implements IModFileCandidateLocator {
 							repositoryFiles.put(file.fileInfo().checksum(), file);
 
 							var json = new JsonObject();
-							file.fileInfo().toJson(json);
+							file.fileInfo().write(json);
 
 							var metaPath = downloadPath.resolveSibling(checksum + ".meta.json");
 
@@ -423,15 +444,12 @@ public class PackSync implements IModFileCandidateLocator {
 					}, executor));
 				}
 
-				var json = new JsonObject();
-				remoteFile.fileInfo().toJson(json);
-				newModList.add(json);
+				modList.add(remoteFile.fileInfo());
 			}
 
 			CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 			futures.clear();
-
-			info.add("mods", newModList);
+			modList.sort((a, b) -> a.filename().compareToIgnoreCase(b.filename()));
 		}
 
 		if (errors.get() > 0) {
@@ -602,21 +620,29 @@ public class PackSync implements IModFileCandidateLocator {
 		CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 		futures.clear();
 
-		info.addProperty("version", newVersion);
+		try (var writer = Files.newBufferedWriter(versionFile)) {
+			var versionJson = new JsonObject();
+			versionJson.addProperty("version", newVersion);
+			var modsJson = new JsonArray();
 
-		try (var writer = Files.newBufferedWriter(infoFile)) {
-			gson.toJson(info, writer);
+			for (var fileInfo : modList) {
+				var modJson = new JsonObject();
+				fileInfo.write(modJson);
+				modsJson.add(modJson);
+			}
+
+			versionJson.add("mods", modsJson);
+			gson.toJson(versionJson, writer);
 		}
 
 		LOGGER.info("Pack updated '" + packVersion + "' -> '" + newVersion + "'!");
-		loadMods(repositoryFiles, info, ignoredMods, pipeline);
+		loadMods(repositoryFiles, modList, ignoredMods, pipeline);
 	}
 
-	private static boolean checkModsExist(Map<String, RepositoryFile> repositoryFiles, JsonObject info, Set<String> ignoredMods) {
-		for (var entry : info.get("mods").getAsJsonArray()) {
+	private static boolean checkModsExist(Map<String, RepositoryFile> repositoryFiles, List<FileInfo> modList, Set<String> ignoredMods) {
+		for (var fileInfo : modList) {
 			try {
-				var fileInfo = new FileInfo(entry.getAsJsonObject());
-				var artifact = fileInfo.artifact();
+				var artifact = fileInfo.artifact().artifact();
 
 				if (!artifact.isEmpty() && ignoredMods.contains(artifact)) {
 					continue;
@@ -635,36 +661,28 @@ public class PackSync implements IModFileCandidateLocator {
 		return true;
 	}
 
-	private static void loadMods(Map<String, RepositoryFile> repositoryFiles, JsonObject info, Set<String> ignoredMods, IDiscoveryPipeline pipeline) {
+	private static void loadMods(Map<String, RepositoryFile> repositoryFiles, List<FileInfo> modList, Set<String> ignoredMods, IDiscoveryPipeline pipeline) {
 		var filesToLoad = new ArrayList<RepositoryFile>();
 
-		for (var entry : info.get("mods").getAsJsonArray()) {
-			String filename = "";
+		for (var fileInfo : modList) {
+			String filename = fileInfo.filename();
 
-			try {
-				var fileInfo = new FileInfo(entry.getAsJsonObject());
-				filename = fileInfo.filename();
-				var artifact = fileInfo.artifact();
+			var artifact = fileInfo.artifact().artifact();
 
-				if (!artifact.isEmpty() && ignoredMods.contains(artifact)) {
-					LOGGER.info("Skipping ignored mod '" + filename + "' (" + artifact + ")");
-					continue;
-				}
+			if (!artifact.isEmpty() && ignoredMods.contains(artifact)) {
+				LOGGER.info("Skipping ignored mod '" + filename + "' (" + artifact + ")");
+				continue;
+			}
 
-				var repositoryFile = repositoryFiles.get(fileInfo.checksum());
+			var repositoryFile = repositoryFiles.get(fileInfo.checksum());
 
-				if (repositoryFile != null) {
-					filesToLoad.add(repositoryFile);
-					LOGGER.info("Loaded mod '" + filename + "' (" + artifact + ":" + fileInfo.version() + "/" + fileInfo.checksum() + ")");
-				} else {
-					pipeline.addIssue(ModLoadingIssue.error("Pack Sync mod %s not found!", fileInfo.filename()));
-				}
-			} catch (Exception ex) {
-				pipeline.addIssue(ModLoadingIssue.error("Pack Sync error loading mod %s!", filename.isEmpty() ? entry.toString() : filename).withCause(ex));
+			if (repositoryFile != null) {
+				filesToLoad.add(repositoryFile);
+				LOGGER.info("Loaded mod " + fileInfo);
+			} else {
+				pipeline.addIssue(ModLoadingIssue.error("Pack Sync mod %s not found!", fileInfo.filename()));
 			}
 		}
-
-		filesToLoad.sort((a, b) -> a.fileInfo().filename().compareToIgnoreCase(b.fileInfo().filename()));
 
 		for (var file : filesToLoad) {
 			pipeline.addPath(file.path(), ModFileDiscoveryAttributes.DEFAULT, IncompatibleFileReporting.WARN_ALWAYS);

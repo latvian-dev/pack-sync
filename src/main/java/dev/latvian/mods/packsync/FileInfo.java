@@ -2,6 +2,7 @@ package dev.latvian.mods.packsync;
 
 import com.google.gson.JsonObject;
 import net.neoforged.neoforgespi.IIssueReporting;
+import org.jetbrains.annotations.NotNull;
 
 import java.nio.file.Path;
 
@@ -9,38 +10,35 @@ public record FileInfo(
 	String checksum,
 	String filename,
 	long size,
-	String artifact,
-	String version
+	Artifact artifact
 ) {
 	public FileInfo(JsonObject json) {
 		this(
 			json.get("checksum").getAsString(),
 			json.get("filename").getAsString(),
 			json.get("size").getAsLong(),
-			json.has("artifact") ? json.get("artifact").getAsString() : "",
-			json.has("version") ? json.get("version").getAsString() : ""
+			Artifact.of(json)
 		);
 	}
 
 	public FileInfo(String filename, long size) {
-		this("", filename, size, "", "");
+		this("", filename, size, Artifact.NONE);
 	}
 
 	public boolean isEqual(Path path, IIssueReporting issues) {
 		return size == PackSync.size(path) && checksum.equals(Checksum.md5(path, issues));
 	}
 
-	public void toJson(JsonObject json) {
+	public void write(JsonObject json) {
 		json.addProperty("checksum", checksum);
 		json.addProperty("filename", filename);
 		json.addProperty("size", size);
+		artifact.write(json);
+	}
 
-		if (!artifact.isEmpty()) {
-			json.addProperty("artifact", artifact);
-		}
-
-		if (!version.isEmpty()) {
-			json.addProperty("version", version);
-		}
+	@Override
+	@NotNull
+	public String toString() {
+		return filename + " (" + (artifact.equals(Artifact.NONE) ? "" : (artifact + "/")) + checksum + ")";
 	}
 }
