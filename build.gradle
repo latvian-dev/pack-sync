@@ -5,7 +5,7 @@ plugins {
 	id 'java'
 	id 'idea'
 	id 'maven-publish'
-	id 'net.neoforged.moddev' version "2.0.118"
+	id 'net.neoforged.moddev' version "2.0.124"
 }
 
 ext.ENV = System.getenv()
@@ -18,37 +18,40 @@ base.archivesName = project.archives_base_name
 println("Building version: $version")
 
 neoForge {
-	version = project.neoforge_version
+	enable {
+		version = project.neoforge_version
+		disableRecompilation = ENV.CI == "true"
 
-	runs {
-		configureEach {
-			logLevel = org.slf4j.event.Level.INFO
-		}
-
-		client {
-			ideName = 'Client'
-			client()
-			systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
-
-			if (ENV.MC_CLIENT_ARGS) {
-				programArguments.addAll(ENV.MC_CLIENT_ARGS.split(' '))
+		runs {
+			configureEach {
+				logLevel = org.slf4j.event.Level.INFO
 			}
 
-			jvmArguments.addAll("-XX:+IgnoreUnrecognizedVMOptions", "-XX:+AllowEnhancedClassRedefinition")
-			gameDirectory = file 'runs/client'
+			client {
+				ideName = 'Client'
+				client()
+				systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+
+				if (ENV.MC_CLIENT_ARGS) {
+					programArguments.addAll(ENV.MC_CLIENT_ARGS.split(' '))
+				}
+
+				jvmArguments.addAll("-XX:+IgnoreUnrecognizedVMOptions", "-XX:+AllowEnhancedClassRedefinition")
+				gameDirectory = file 'runs/client'
+			}
+
+			server {
+				ideName = 'Server'
+				server()
+				programArgument("--nogui")
+				gameDirectory = file 'runs/server'
+			}
 		}
 
-		server {
-			ideName = 'Server'
-			server()
-			programArgument("--nogui")
-			gameDirectory = file 'runs/server'
-		}
-	}
-
-	mods {
-		preloader {
-			sourceSet sourceSets.main
+		mods {
+			packsync {
+				sourceSet sourceSets.main
+			}
 		}
 	}
 }
@@ -145,7 +148,9 @@ publishing {
 
 idea {
 	module {
-		downloadSources = true
-		downloadJavadoc = true
+		if (ENV.CI != "true") {
+			downloadSources = true
+			downloadJavadoc = true
+		}
 	}
 }
