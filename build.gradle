@@ -96,6 +96,14 @@ repositories {
 }
 
 dependencies {
+	/* not possible until 1.21.10+
+	additionalRuntimeClasspath(jarJar(implementation('dev.latvian.apps:nbt'))) {
+		version {
+			strictly "[$nbt_version,)"
+			prefer "$nbt_version"
+		}
+	}
+	 */
 }
 
 processResources {

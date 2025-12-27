@@ -6,7 +6,6 @@ import com.google.gson.JsonObject;
 import com.mojang.logging.LogUtils;
 import dev.latvian.mods.packsync.repackaged.nbt.NBTCompoundTag;
 import dev.latvian.mods.packsync.repackaged.nbt.NBTList;
-import dev.latvian.mods.packsync.repackaged.nbt.NBTString;
 import net.neoforged.fml.ModLoadingIssue;
 import net.neoforged.fml.loading.FMLLoader;
 import net.neoforged.fml.loading.FMLPaths;
@@ -33,6 +32,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -53,6 +53,11 @@ import java.util.zip.GZIPInputStream;
 
 public class PackSync implements IModFileCandidateLocator {
 	private static final Logger LOGGER = LogUtils.getLogger();
+
+	public static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
+		.connectTimeout(Duration.ofSeconds(60L))
+		.followRedirects(HttpClient.Redirect.ALWAYS)
+		.build();
 
 	public static String getPlatform() {
 		String s = System.getProperty("os.name").toLowerCase(Locale.ROOT);
@@ -87,10 +92,10 @@ public class PackSync implements IModFileCandidateLocator {
 		return in;
 	}
 
-	private static void fetch(HttpClient httpClient, HttpRequest.Builder requestBuilderBase, IDiscoveryPipeline pipeline, String fileName, long size, String uri, boolean gzip, Consumer<InputStream> callback) {
+	private static void fetch(HttpRequest.Builder requestBuilderBase, IDiscoveryPipeline pipeline, String fileName, long size, String uri, boolean gzip, Consumer<InputStream> callback) {
 		try {
 			LOGGER.info("Fetching " + fileName + " from " + uri + (size > 0L ? " [%,d bytes]...".formatted(size) : "..."));
-			var response = httpClient.send(requestBuilderBase.copy().uri(URI.create(uri)).build(), HttpResponse.BodyHandlers.ofInputStream());
+			var response = HTTP_CLIENT.send(requestBuilderBase.copy().uri(URI.create(uri)).build(), HttpResponse.BodyHandlers.ofInputStream());
 
 			if (response.statusCode() / 100 != 2) {
 				pipeline.addIssue(ModLoadingIssue.error("Failed to update %s! Error code %d", fileName, response.statusCode()));
@@ -104,12 +109,12 @@ public class PackSync implements IModFileCandidateLocator {
 		}
 	}
 
-	private static boolean download(HttpClient httpClient, HttpRequest.Builder requestBuilderBase, IDiscoveryPipeline pipeline, Path path, String fileName, long size, String uri, boolean gzip) {
+	private static boolean download(HttpRequest.Builder requestBuilderBase, IDiscoveryPipeline pipeline, Path path, String fileName, long size, String uri, boolean gzip) {
 		var actualFileName = fileName.isEmpty() ? path.getFileName().toString() : fileName;
 
 		try {
 			LOGGER.info("Downloading " + actualFileName + " from " + uri + (size > 0L ? " [%,d bytes]...".formatted(size) : "..."));
-			var response = httpClient.send(requestBuilderBase.copy().uri(URI.create(uri)).build(), HttpResponse.BodyHandlers.ofInputStream());
+			var response = HTTP_CLIENT.send(requestBuilderBase.copy().uri(URI.create(uri)).build(), HttpResponse.BodyHandlers.ofInputStream());
 
 			if (response.statusCode() / 100 != 2) {
 				pipeline.addIssue(ModLoadingIssue.error("Failed to update %s! Error code %d", actualFileName, response.statusCode()).withAffectedPath(path));
@@ -145,7 +150,7 @@ public class PackSync implements IModFileCandidateLocator {
 		}
 	}
 
-	public static void findMods(Executor executor, HttpClient httpClient, IDiscoveryPipeline pipeline) throws Exception {
+	public static void findMods(Executor executor, IDiscoveryPipeline pipeline) throws Exception {
 		var errors = new AtomicInteger(0);
 		var gameDir = FMLPaths.GAMEDIR.get();
 		long startTime = System.currentTimeMillis();
@@ -197,18 +202,24 @@ public class PackSync implements IModFileCandidateLocator {
 		{
 			boolean updateLocalConfigJson = false;
 
-			if (!localConfigJson.has("auth")) {
-				localConfigJson.addProperty("auth", "%PACK_SYNC_TOKEN%");
-				updateLocalConfigJson = true;
-			}
-
 			if (!localConfigJson.has("pause_updates")) {
 				localConfigJson.addProperty("pause_updates", false);
 				updateLocalConfigJson = true;
 			}
 
-			if (!localConfigJson.has("ignored_mods")) {
-				localConfigJson.add("ignored_mods", new JsonArray());
+			if (!localConfigJson.has("disabled_artifacts")) {
+				localConfigJson.add("disabled_artifacts", new JsonObject());
+				updateLocalConfigJson = true;
+			}
+
+			if (localConfigJson.has("ignored_mods")) {
+				var obj = localConfigJson.getAsJsonObject("disabled_artifacts");
+
+				for (var mod : localConfigJson.get("ignored_mods").getAsJsonArray()) {
+					obj.addProperty(mod.getAsString(), true);
+				}
+
+				localConfigJson.remove("ignored_mods");
 				updateLocalConfigJson = true;
 			}
 
@@ -277,31 +288,41 @@ public class PackSync implements IModFileCandidateLocator {
 
 		var now = System.currentTimeMillis();
 		LOGGER.info("Found %,d local files in %,d ms".formatted(repositoryFiles.size(), now - startTime));
-		startTime = now;
 
-		var api = config.get("api").getAsString();
+		var api0 = config.get("api").getAsString();
 
-		while (api.endsWith("/")) {
-			api = api.substring(0, api.length() - 1);
+		while (api0.endsWith("/")) {
+			api0 = api0.substring(0, api0.length() - 1);
 		}
 
+		var api = api0;
+
 		var packCode = config.get("pack_code").getAsString();
-		var auth = localConfigJson.get("auth").getAsString();
+		var packId = config.has("pack_id") ? config.get("pack_id").getAsString() : packCode;
+
+		System.setProperty("dev.latvian.mods.packsync.id", packId);
+		System.setProperty("dev.latvian.mods.packsync.code", packCode);
+
+		var auth = localConfigJson.has("auth") ? localConfigJson.get("auth").getAsString() : "%PACK_SYNC_TOKEN%";
 
 		while (auth.length() >= 3 && auth.startsWith("%") && auth.endsWith("%")) {
 			auth = Optional.ofNullable(System.getenv(auth.substring(1, auth.length() - 1))).orElse("");
 		}
 
-		var requestBuilderBase = HttpRequest.newBuilder().timeout(Duration.ofSeconds(30L)).header("User-Agent", "dev.latvian.mods.packsync/1.0");
+		var requestBuilderBase = HttpRequest.newBuilder().timeout(Duration.ofSeconds(60L)).header("User-Agent", "dev.latvian.mods.packsync/1.0");
 
 		if (!auth.isEmpty()) {
 			requestBuilderBase.header("Authorization", "Bearer " + auth);
 		}
 
+		String sessionId;
 		String newVersion;
 
 		try {
-			var versionRequest = httpClient.send(requestBuilderBase.copy().uri(URI.create(api + "/version/" + URLEncoder.encode(packCode, StandardCharsets.UTF_8))).GET().build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+			var versionRequest = HTTP_CLIENT.send(requestBuilderBase.copy().uri(URI.create(api + "/version/" + URLEncoder.encode(packCode, StandardCharsets.UTF_8))).GET().build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+			sessionId = versionRequest.headers().firstValue("X-Pack-Sync-Session-ID").orElse("");
+			packId = versionRequest.headers().firstValue("X-Pack-Sync-Pack-ID").orElse(packId);
+			System.setProperty("dev.latvian.mods.packsync.id", packId);
 
 			if (versionRequest.statusCode() / 100 != 2) {
 				pipeline.addIssue(ModLoadingIssue.warning("Failed to update the modpack with error %d - %s!", versionRequest.statusCode(), versionRequest.body()));
@@ -313,6 +334,22 @@ public class PackSync implements IModFileCandidateLocator {
 			pipeline.addIssue(ModLoadingIssue.warning("Pack Sync update server timed out!").withCause(ex));
 			return;
 		}
+
+		System.setProperty("dev.latvian.mods.packsync.version", newVersion);
+
+		if (!sessionId.isEmpty()) {
+			System.setProperty("dev.latvian.mods.packsync.session", sessionId);
+			requestBuilderBase.header("X-Pack-Sync-Session-ID", sessionId);
+		}
+
+		Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+			try {
+				HTTP_CLIENT.send(requestBuilderBase.copy().uri(URI.create(api + "/exit")).POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.discarding());
+				HTTP_CLIENT.close();
+			} catch (Exception ex) {
+				ex.printStackTrace();
+			}
+		}, "Pack-Sync-Shutdown-Hook"));
 
 		var versionFile = localPackSyncDirectory.resolve("version.json");
 
@@ -339,26 +376,32 @@ public class PackSync implements IModFileCandidateLocator {
 			}
 		}
 
-		var ignoredMods = new HashSet<String>();
+		var knownArtifacts = new HashSet<String>();
+		var disabledArtifacts = new HashSet<String>();
 
-		for (var e : localConfigJson.get("ignored_mods").getAsJsonArray()) {
-			ignoredMods.add(e.getAsString());
+		for (var e : localConfigJson.get("disabled_artifacts").getAsJsonObject().entrySet()) {
+			var key = e.getKey();
+			knownArtifacts.add(key);
+
+			if (e.getValue().getAsBoolean()) {
+				disabledArtifacts.add(key);
+			}
 		}
 
-		if (!packVersion.isEmpty() && !checkModsExist(repositoryFiles, modList, ignoredMods)) {
+		if (!packVersion.isEmpty() && !checkModsExist(repositoryFiles, modList, disabledArtifacts)) {
 			LOGGER.info("Found missing or broken repository files, forcing an update...");
 			packVersion = "";
 		}
 
 		if (!packVersion.isEmpty() && localConfigJson.get("pause_updates").getAsBoolean()) {
 			LOGGER.info("Pack updates are paused ('" + packVersion + "')!");
-			loadMods(repositoryFiles, modList, ignoredMods, pipeline);
+			loadMods(repositoryFiles, modList, disabledArtifacts, pipeline);
 			return;
 		}
 
 		if (newVersion.equals(packVersion)) {
 			LOGGER.info("Pack is up to date ('" + packVersion + "')!");
-			loadMods(repositoryFiles, modList, ignoredMods, pipeline);
+			loadMods(repositoryFiles, modList, disabledArtifacts, pipeline);
 			return;
 		}
 
@@ -373,12 +416,13 @@ public class PackSync implements IModFileCandidateLocator {
 		requestJson.addProperty("dev", !FMLLoader.isProduction());
 		requestJson.addProperty("server", FMLLoader.getDist().isDedicatedServer());
 		requestJson.addProperty("gzip", true);
+		requestJson.addProperty("request_server_list", true);
 
-		var syncRequest = httpClient.send(requestBuilderBase.copy().uri(URI.create(api + "/sync/" + URLEncoder.encode(packCode, StandardCharsets.UTF_8))).POST(HttpRequest.BodyPublishers.ofString(requestJson.toString(), StandardCharsets.UTF_8)).build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+		var syncRequest = HTTP_CLIENT.send(requestBuilderBase.copy().uri(URI.create(api + "/sync/" + URLEncoder.encode(packCode, StandardCharsets.UTF_8))).POST(HttpRequest.BodyPublishers.ofString(requestJson.toString(), StandardCharsets.UTF_8)).build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
 
 		if (syncRequest.statusCode() / 100 != 2) {
 			pipeline.addIssue(ModLoadingIssue.warning("Failed to update the modpack with error %d - %s!", syncRequest.statusCode(), syncRequest.body()));
-			loadMods(repositoryFiles, modList, ignoredMods, pipeline);
+			loadMods(repositoryFiles, modList, disabledArtifacts, pipeline);
 			return;
 		}
 
@@ -425,7 +469,7 @@ public class PackSync implements IModFileCandidateLocator {
 						var ext = exti == -1 ? "" : filename.substring(exti);
 						var downloadPath = dir.resolve(checksum + ext);
 
-						if (repositoryFile != null || download(httpClient, requestBuilderBase, pipeline, downloadPath, filename + " (" + checksum + ")", remoteFile.fileInfo().size(), remoteFile.url(), remoteFile.gzip())) {
+						if (repositoryFile != null || download(requestBuilderBase, pipeline, downloadPath, filename + " (" + checksum + ")", remoteFile.fileInfo().size(), remoteFile.url(), remoteFile.gzip())) {
 							var file = new RepositoryFile(downloadPath, remoteFile.fileInfo());
 							repositoryFiles.put(file.fileInfo().checksum(), file);
 
@@ -472,59 +516,11 @@ public class PackSync implements IModFileCandidateLocator {
 						if (file.fileInfo().size() == 0L && file.fileInfo().filename().equals("deleted")) {
 							delete(path, relPath.toString(), pipeline);
 						} else {
-							download(httpClient, requestBuilderBase, pipeline, path, relPath.toString(), file.fileInfo().size(), file.url(), file.gzip());
+							download(requestBuilderBase, pipeline, path, relPath.toString(), file.fileInfo().size(), file.url(), file.gzip());
 						}
 					}
 				}, executor));
 			}
-		}
-
-		if (errors.get() > 0) {
-			return;
-		}
-
-		if (syncJson.has("servers")) {
-			var file = new RemoteFile(syncJson.get("servers").getAsJsonObject());
-
-			futures.add(CompletableFuture.runAsync(() -> fetch(httpClient, requestBuilderBase, pipeline, "servers.dat", file.fileInfo().size(), file.url(), file.gzip(), in -> {
-				var path = gameDir.resolve("servers.dat");
-
-				try {
-					var remoteNbt = NBTCompoundTag.readFully(in);
-					var nbt = Files.exists(path) ? NBTCompoundTag.read(path) : new NBTCompoundTag();
-					var serverMap = new LinkedHashMap<String, NBTCompoundTag>();
-
-					if (nbt.get("servers") instanceof NBTList list) {
-						for (var entry : list) {
-							if (entry instanceof NBTCompoundTag tag && tag.get("name") instanceof NBTString(String name) && !name.isEmpty()) {
-								serverMap.put(name, tag);
-							}
-						}
-					}
-
-					if (remoteNbt.get("servers") instanceof NBTList list) {
-						for (var entry : list) {
-							if (entry instanceof NBTCompoundTag tag && tag.get("name") instanceof NBTString(String name) && !name.isEmpty()) {
-								if (tag.get("ip") instanceof NBTString(String ip) && !ip.isEmpty()) {
-									serverMap.put(name, tag);
-								} else {
-									serverMap.remove(name);
-								}
-							}
-						}
-					}
-
-					nbt.put("servers", new NBTList(serverMap.values()));
-					nbt.write(path);
-				} catch (Exception ex) {
-					pipeline.addIssue(ModLoadingIssue.error("Failed to merge pack-sync-servers.dat into servers.dat!").withCause(ex).withAffectedPath(path));
-					errors.incrementAndGet();
-				}
-			}), executor));
-		}
-
-		if (errors.get() > 0) {
-			return;
 		}
 
 		if (syncJson.has("server_icon")) {
@@ -534,9 +530,76 @@ public class PackSync implements IModFileCandidateLocator {
 				var path = gameDir.resolve("server-icon.png");
 
 				if (file.replace(path, pipeline)) {
-					download(httpClient, requestBuilderBase, pipeline, path, "server-icon.png", file.fileInfo().size(), file.url(), file.gzip());
+					download(requestBuilderBase, pipeline, path, "server-icon.png", file.fileInfo().size(), file.url(), file.gzip());
 				}
 			}, executor));
+		}
+
+		CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+		futures.clear();
+
+		if (errors.get() > 0) {
+			return;
+		}
+
+		if (syncJson.has("servers") || syncJson.has("server_list")) {
+			futures.add(CompletableFuture.runAsync(() -> {
+				var localPath = gameDir.resolve("servers.dat");
+				var iconPath = gameDir.resolve("server-icon.png");
+
+				try {
+					var icon = Files.exists(iconPath) ? Base64.getEncoder().encodeToString(Files.readAllBytes(iconPath)) : "";
+					var localNbt = Files.exists(localPath) ? NBTCompoundTag.read(localPath) : new NBTCompoundTag();
+					var localServerList = ServerMapEntry.load(localNbt, "");
+					var remoteServerList = new ArrayList<ServerMapEntry>();
+
+					if (syncJson.has("server_list")) {
+						for (var entry : syncJson.get("server_list").getAsJsonArray()) {
+							remoteServerList.add(new ServerMapEntry(entry.getAsJsonObject(), icon));
+						}
+					} else {
+						var file = new RemoteFile(syncJson.get("servers").getAsJsonObject());
+
+						fetch(requestBuilderBase, pipeline, "servers.dat", file.fileInfo().size(), file.url(), file.gzip(), in -> {
+							try {
+								var remoteNbt = NBTCompoundTag.readFully(in);
+								remoteServerList.addAll(ServerMapEntry.load(remoteNbt, icon));
+							} catch (Exception ex) {
+								pipeline.addIssue(ModLoadingIssue.error("Failed to fetch remote servers.dat!").withCause(ex));
+								errors.incrementAndGet();
+							}
+						});
+					}
+
+					for (var entry : remoteServerList) {
+						boolean replaced = false;
+
+						for (int i = 0; i < localServerList.size(); i++) {
+							var lentry = localServerList.get(i);
+
+							if (lentry.name().equals(entry.name())) {
+								localServerList.set(i, entry);
+								replaced = true;
+							}
+						}
+
+						if (!replaced && !entry.ip().isEmpty()) {
+							localServerList.add(entry);
+						}
+					}
+
+					localServerList.removeIf(e -> e.ip().isEmpty());
+					localNbt.put("servers", new NBTList(localServerList.stream().map(ServerMapEntry::toNBT).toList()));
+					localNbt.write(localPath);
+				} catch (Exception ex) {
+					pipeline.addIssue(ModLoadingIssue.error("Failed to update servers.dat!").withCause(ex).withAffectedPath(localPath));
+					errors.incrementAndGet();
+				}
+			}, executor));
+		}
+
+		if (errors.get() > 0) {
+			return;
 		}
 
 		if (syncJson.has("options")) {
@@ -553,7 +616,7 @@ public class PackSync implements IModFileCandidateLocator {
 					}
 				}
 			} else {
-				options.put("version", "4325");
+				options.put("version", "4325"); // FIXME: Figure out how to get SharedConstants.getCurrentVersion().getDataVersion().getVersion()
 			}
 
 			for (var entry : syncJson.get("options").getAsJsonArray()) {
@@ -635,16 +698,40 @@ public class PackSync implements IModFileCandidateLocator {
 			gson.toJson(versionJson, writer);
 		}
 
+		var newKnownArtifacts = new HashSet<>(disabledArtifacts);
+
+		for (var file : modList) {
+			var artifact = file.artifact().artifact();
+
+			if (!artifact.isEmpty()) {
+				newKnownArtifacts.add(artifact);
+			}
+		}
+
+		if (!knownArtifacts.equals(newKnownArtifacts)) {
+			var obj = new JsonObject();
+
+			for (var key : newKnownArtifacts.stream().sorted(String.CASE_INSENSITIVE_ORDER).toList()) {
+				obj.addProperty(key, disabledArtifacts.contains(key));
+			}
+
+			localConfigJson.add("disabled_artifacts", obj);
+
+			try (var writer = Files.newBufferedWriter(localConfigFile)) {
+				gson.toJson(localConfigJson, writer);
+			}
+		}
+
 		LOGGER.info("Pack updated '" + packVersion + "' -> '" + newVersion + "'!");
-		loadMods(repositoryFiles, modList, ignoredMods, pipeline);
+		loadMods(repositoryFiles, modList, disabledArtifacts, pipeline);
 	}
 
-	private static boolean checkModsExist(Map<String, RepositoryFile> repositoryFiles, List<FileInfo> modList, Set<String> ignoredMods) {
+	private static boolean checkModsExist(Map<String, RepositoryFile> repositoryFiles, List<FileInfo> modList, Set<String> disabledArtifacts) {
 		for (var fileInfo : modList) {
 			try {
 				var artifact = fileInfo.artifact().artifact();
 
-				if (!artifact.isEmpty() && ignoredMods.contains(artifact)) {
+				if (!artifact.isEmpty() && disabledArtifacts.contains(artifact)) {
 					continue;
 				}
 
@@ -661,7 +748,7 @@ public class PackSync implements IModFileCandidateLocator {
 		return true;
 	}
 
-	private static void loadMods(Map<String, RepositoryFile> repositoryFiles, List<FileInfo> modList, Set<String> ignoredMods, IDiscoveryPipeline pipeline) {
+	private static void loadMods(Map<String, RepositoryFile> repositoryFiles, List<FileInfo> modList, Set<String> disabledArtifacts, IDiscoveryPipeline pipeline) {
 		var filesToLoad = new ArrayList<RepositoryFile>();
 
 		for (var fileInfo : modList) {
@@ -669,8 +756,8 @@ public class PackSync implements IModFileCandidateLocator {
 
 			var artifact = fileInfo.artifact().artifact();
 
-			if (!artifact.isEmpty() && ignoredMods.contains(artifact)) {
-				LOGGER.info("Skipping ignored mod '" + filename + "' (" + artifact + ")");
+			if (!artifact.isEmpty() && disabledArtifacts.contains(artifact)) {
+				LOGGER.info("Skipping artifact '" + filename + "' (" + artifact + ")");
 				continue;
 			}
 
@@ -694,8 +781,8 @@ public class PackSync implements IModFileCandidateLocator {
 		long startTime = System.currentTimeMillis();
 		LOGGER.info("Loading Pack Sync...");
 
-		try (var executor = Executors.newVirtualThreadPerTaskExecutor(); var httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15L)).followRedirects(HttpClient.Redirect.ALWAYS).build()) {
-			findMods(executor, httpClient, pipeline);
+		try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+			findMods(executor, pipeline);
 		} catch (HttpTimeoutException ex) {
 			pipeline.addIssue(ModLoadingIssue.warning("Pack Sync update server timed out!").withCause(ex));
 		} catch (Exception ex) {
