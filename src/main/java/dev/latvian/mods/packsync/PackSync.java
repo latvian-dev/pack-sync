@@ -38,6 +38,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
@@ -47,7 +48,6 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
 
@@ -415,8 +415,13 @@ public class PackSync implements IModFileCandidateLocator {
 		requestJson.addProperty("platform", getPlatform());
 		requestJson.addProperty("dev", !FMLLoader.isProduction());
 		requestJson.addProperty("server", FMLLoader.getDist().isDedicatedServer());
-		requestJson.addProperty("gzip", true);
-		requestJson.addProperty("request_server_list", true);
+
+		var supportedFeatures = new JsonArray();
+		supportedFeatures.add("gzip");
+		supportedFeatures.add("server_list");
+		supportedFeatures.add("session");
+
+		requestJson.add("supported_features", supportedFeatures);
 
 		var syncRequest = HTTP_CLIENT.send(requestBuilderBase.copy().uri(URI.create(api + "/sync/" + URLEncoder.encode(packCode, StandardCharsets.UTF_8))).POST(HttpRequest.BodyPublishers.ofString(requestJson.toString(), StandardCharsets.UTF_8)).build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
 
@@ -603,81 +608,93 @@ public class PackSync implements IModFileCandidateLocator {
 		}
 
 		if (syncJson.has("options")) {
-			var options = new LinkedHashMap<String, String>();
-			var path = gameDir.resolve("options.txt");
-			boolean changed = false;
+			futures.add(CompletableFuture.runAsync(() -> {
+				LOGGER.info("Updating options.txt...");
+				var path = gameDir.resolve("options.txt");
 
-			if (Files.exists(path)) {
-				for (var line : Files.readAllLines(path)) {
-					var parts = line.split(":", 2);
+				try {
+					var options = new LinkedHashMap<String, String>();
+					boolean changed = false;
 
-					if (parts.length == 2) {
-						options.put(parts[0], parts[1]);
+					if (Files.exists(path)) {
+						for (var line : Files.readAllLines(path)) {
+							var parts = line.split(":", 2);
+
+							if (parts.length == 2) {
+								options.put(parts[0], parts[1]);
+							}
+						}
 					}
-				}
-			} else {
-				options.put("version", "4325"); // FIXME: Figure out how to get SharedConstants.getCurrentVersion().getDataVersion().getVersion()
-			}
 
-			for (var entry : syncJson.get("options").getAsJsonArray()) {
-				var json = entry.getAsJsonObject();
-				var key = json.get("key").getAsString();
-				var value = json.get("value").getAsString();
-				var force = json.has("force") && json.get("force").getAsBoolean();
+					var arr = syncJson.get("options").getAsJsonArray();
 
-				if (!options.containsKey(key) || force && !options.get(key).equals(value)) {
-					options.put(key, value);
-					changed = true;
-				}
-			}
+					for (var entry : arr) {
+						var json = entry.getAsJsonObject();
+						var key = json.get("key").getAsString();
+						var value = json.get("value").getAsString();
+						var force = json.has("force") && json.get("force").getAsBoolean();
 
-			if (changed) {
-				futures.add(CompletableFuture.runAsync(() -> {
-					LOGGER.info("Updating options.txt...");
-
-					try {
-						Files.writeString(path, options.entrySet().stream().map(e -> e.getKey() + ":" + e.getValue()).collect(Collectors.joining("\n")));
-					} catch (Exception ex) {
-						pipeline.addIssue(ModLoadingIssue.warning("Failed to update options.txt!").withCause(ex).withAffectedPath(path));
+						if (force || !options.containsKey(key)) {
+							if (!Objects.equals(options.put(key, value), value)) {
+								changed = true;
+							}
+						}
 					}
-				}, executor));
-			}
+
+					if (!options.containsKey("version")) {
+						options.putFirst("version", "4325"); // FIXME: Figure out how to get SharedConstants.getCurrentVersion().getDataVersion().getVersion()
+						changed = true;
+					}
+
+					if (changed) {
+						var lines = options.entrySet().stream().map(e -> e.getKey() + ":" + e.getValue()).toList();
+						Files.write(path, lines);
+					}
+				} catch (Exception ex) {
+					pipeline.addIssue(ModLoadingIssue.warning("Failed to update options.txt!").withCause(ex).withAffectedPath(path));
+				}
+			}, executor));
 		}
 
 		if (syncJson.has("server_properties")) {
-			var properties = new Properties();
-			var path = gameDir.resolve("server.properties");
-			boolean changed = false;
+			futures.add(CompletableFuture.runAsync(() -> {
+				LOGGER.info("Updating server.properties...");
+				var path = gameDir.resolve("server.properties");
 
-			if (Files.exists(path)) {
-				try (var in = Files.newInputStream(path)) {
-					properties.load(in);
-				}
-			}
+				try {
+					var properties = new Properties();
+					boolean changed = false;
 
-			for (var entry : syncJson.get("server_properties").getAsJsonArray()) {
-				var json = entry.getAsJsonObject();
-				var key = json.get("key").getAsString();
-				var value = json.get("value").getAsString();
-				var force = json.has("force") && json.get("force").getAsBoolean();
-
-				if (!properties.containsKey(key) || force && !properties.get(key).equals(value)) {
-					properties.setProperty(key, value);
-					changed = true;
-				}
-			}
-
-			if (changed) {
-				futures.add(CompletableFuture.runAsync(() -> {
-					LOGGER.info("Updating server.properties...");
-
-					try (var out = Files.newOutputStream(path)) {
-						properties.store(out, "Minecraft server properties");
-					} catch (Exception ex) {
-						pipeline.addIssue(ModLoadingIssue.warning("Failed to update server.properties!").withCause(ex).withAffectedPath(path));
+					if (Files.exists(path)) {
+						try (var in = Files.newInputStream(path)) {
+							properties.load(in);
+						}
 					}
-				}, executor));
-			}
+
+					var arr = syncJson.get("server_properties").getAsJsonArray();
+
+					for (var entry : arr) {
+						var json = entry.getAsJsonObject();
+						var key = json.get("key").getAsString();
+						var value = json.get("value").getAsString();
+						var force = json.has("force") && json.get("force").getAsBoolean();
+
+						if (force || !properties.containsKey(key)) {
+							if (!Objects.equals(properties.setProperty(key, value), value)) {
+								changed = true;
+							}
+						}
+					}
+
+					if (changed) {
+						try (var out = Files.newOutputStream(path)) {
+							properties.store(out, "Minecraft server properties");
+						}
+					}
+				} catch (Exception ex) {
+					pipeline.addIssue(ModLoadingIssue.warning("Failed to update server.properties!").withCause(ex).withAffectedPath(path));
+				}
+			}, executor));
 		}
 
 		CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
