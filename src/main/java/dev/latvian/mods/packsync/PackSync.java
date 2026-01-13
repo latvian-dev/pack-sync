@@ -28,6 +28,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -230,18 +231,6 @@ public class PackSync implements IModFileCandidateLocator {
 			}
 		}
 
-		var repositoryEnv = Optional.ofNullable(System.getenv("PACK_SYNC_REPO_DIRECTORY")).orElse("");
-		var repository = repositoryEnv.isEmpty() ? Path.of(System.getProperty("user.home")).resolve(".latvian.dev").resolve("pack-sync") : Path.of(repositoryEnv);
-
-		if (Files.notExists(repository) || !Files.isDirectory(repository)) {
-			try {
-				Files.createDirectories(repository);
-			} catch (Exception ex) {
-				pipeline.addIssue(ModLoadingIssue.error("Failed to create Pack Sync repository directory!").withCause(ex).withAffectedPath(repository));
-				return;
-			}
-		}
-
 		var localRepository = localPackSyncDirectory.resolve("repository");
 
 		if (Files.notExists(localRepository)) {
@@ -250,6 +239,20 @@ public class PackSync implements IModFileCandidateLocator {
 			} catch (Exception ex) {
 				pipeline.addIssue(ModLoadingIssue.error("Failed to create Pack Sync local repository directory!").withCause(ex).withAffectedPath(localRepository));
 				return;
+			}
+		}
+
+		var repositoryEnv = Optional.ofNullable(System.getenv("PACK_SYNC_REPO_DIRECTORY")).orElse("");
+		var repository = repositoryEnv.isEmpty() ? Path.of(System.getProperty("user.home")).resolve(".latvian.dev").resolve("pack-sync") : Path.of(repositoryEnv);
+
+		if (Files.notExists(repository) || !Files.isDirectory(repository)) {
+			try {
+				Files.createDirectories(repository);
+			} catch (AccessDeniedException ex) {
+				repository = localRepository;
+				LOGGER.error("Failed to create Pack Sync repository directory! Switching to local repository directory");
+			} catch (Exception ex) {
+				pipeline.addIssue(ModLoadingIssue.error("Failed to create Pack Sync repository directory!").withCause(ex).withAffectedPath(repository));
 			}
 		}
 

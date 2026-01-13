@@ -8,8 +8,9 @@ plugins {
 	id 'net.neoforged.moddev' version "2.0.137"
 }
 
-ext.ENV = System.getenv()
-def isLocal = !ENV.containsKey("GITHUB_RUN_NUMBER")
+var ENV = System.getenv()
+var CI = ENV.CI == "true"
+var isLocal = !ENV.containsKey("GITHUB_RUN_NUMBER")
 
 version = "${mod_version}-${isLocal ? "local.${Instant.now().epochSecond}" : "build.${ENV.GITHUB_RUN_NUMBER}"}"
 group = project.maven_group
@@ -20,7 +21,7 @@ println("Building version: $version")
 neoForge {
 	enable {
 		version = project.neoforge_version
-		disableRecompilation = ENV.CI == "true"
+		disableRecompilation = CI
 
 		runs {
 			configureEach {
@@ -156,7 +157,7 @@ publishing {
 
 idea {
 	module {
-		if (ENV.CI != "true") {
+		if (!CI) {
 			downloadSources = true
 			downloadJavadoc = true
 		}
