@@ -418,7 +418,7 @@ public class PackSync implements IModFileCandidateLocator {
 		requestJson.addProperty("mc_version", FMLLoader.versionInfo().mcVersion());
 		requestJson.addProperty("loader_version", FMLLoader.versionInfo().fmlVersion());
 		requestJson.addProperty("loader_api_version", FMLLoader.versionInfo().neoForgeVersion());
-		requestJson.addProperty("platform", getPlatform());
+		requestJson.addProperty("platform", platform);
 		requestJson.addProperty("dev", !FMLLoader.isProduction());
 		requestJson.addProperty("server", FMLLoader.getDist().isDedicatedServer());
 
@@ -426,6 +426,10 @@ public class PackSync implements IModFileCandidateLocator {
 		supportedFeatures.add("gzip");
 		supportedFeatures.add("server_list");
 		supportedFeatures.add("session");
+
+		if (FMLLoader.getDist().isClient()) {
+			loadSupportedClientFeatures(supportedFeatures);
+		}
 
 		requestJson.add("supported_features", supportedFeatures);
 
@@ -747,6 +751,10 @@ public class PackSync implements IModFileCandidateLocator {
 
 		LOGGER.info("Pack updated '" + packVersion + "' -> '" + newVersion + "'!");
 		loadMods(repositoryFiles, modList, disabledArtifacts, pipeline);
+	}
+
+	private static void loadSupportedClientFeatures(JsonArray features) {
+		PackSyncClient.loadSupportedClientFeatures(features);
 	}
 
 	private static boolean checkModsExist(Map<String, RepositoryFile> repositoryFiles, List<FileInfo> modList, Set<String> disabledArtifacts) {
