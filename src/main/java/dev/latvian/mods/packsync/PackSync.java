@@ -242,8 +242,11 @@ public class PackSync implements IModFileCandidateLocator {
 			}
 		}
 
+		var platform = getPlatform();
+		var userHome = platform.equals("windows") ? System.getenv("APPDATA") : System.getProperty("user.home");
 		var repositoryEnv = Optional.ofNullable(System.getenv("PACK_SYNC_REPO_DIRECTORY")).orElse("");
-		var repository = repositoryEnv.isEmpty() ? Path.of(System.getProperty("user.home")).resolve(".latvian.dev").resolve("pack-sync") : Path.of(repositoryEnv);
+
+		var repository = repositoryEnv.isEmpty() ? Path.of(userHome).resolve("latvian.dev").resolve("pack-sync") : Path.of(repositoryEnv);
 
 		if (Files.notExists(repository) || !Files.isDirectory(repository)) {
 			try {
