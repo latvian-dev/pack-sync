@@ -4,8 +4,8 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.mojang.logging.LogUtils;
-import dev.latvian.mods.packsync.repackaged.nbt.NBTCompoundTag;
-import dev.latvian.mods.packsync.repackaged.nbt.NBTList;
+import dev.latvian.apps.nbt.NBTCompoundTag;
+import dev.latvian.apps.nbt.NBTList;
 import net.neoforged.fml.ModLoadingIssue;
 import net.neoforged.fml.loading.FMLLoader;
 import net.neoforged.fml.loading.FMLPaths;
@@ -151,7 +151,7 @@ public class PackSync implements IModFileCandidateLocator {
 		}
 	}
 
-	public static void findMods(Executor executor, IDiscoveryPipeline pipeline) throws Exception {
+	public static void findMods(ILaunchContext context, Executor executor, IDiscoveryPipeline pipeline) throws Exception {
 		var errors = new AtomicInteger(0);
 		var gameDir = FMLPaths.GAMEDIR.get();
 		long startTime = System.currentTimeMillis();
@@ -415,19 +415,19 @@ public class PackSync implements IModFileCandidateLocator {
 
 		var requestJson = new JsonObject();
 		requestJson.addProperty("pack_version", packVersion);
-		requestJson.addProperty("mc_version", FMLLoader.versionInfo().mcVersion());
-		requestJson.addProperty("loader_version", FMLLoader.versionInfo().fmlVersion());
-		requestJson.addProperty("loader_api_version", FMLLoader.versionInfo().neoForgeVersion());
+		requestJson.addProperty("mc_version", context.getVersions().mcVersion());
+		requestJson.addProperty("loader_version", context.getVersions().neoFormVersion());
+		requestJson.addProperty("loader_api_version", context.getVersions().neoForgeVersion());
 		requestJson.addProperty("platform", platform);
-		requestJson.addProperty("dev", !FMLLoader.isProduction());
-		requestJson.addProperty("server", FMLLoader.getDist().isDedicatedServer());
+		requestJson.addProperty("dev", !FMLLoader.getCurrent().isProduction());
+		requestJson.addProperty("server", context.getRequiredDistribution().isDedicatedServer());
 
 		var supportedFeatures = new JsonArray();
 		supportedFeatures.add("gzip");
 		supportedFeatures.add("server_list");
 		supportedFeatures.add("session");
 
-		if (FMLLoader.getDist().isClient()) {
+		if (context.getRequiredDistribution().isClient()) {
 			loadSupportedClientFeatures(supportedFeatures);
 		}
 
@@ -813,7 +813,7 @@ public class PackSync implements IModFileCandidateLocator {
 		LOGGER.info("Loading Pack Sync...");
 
 		try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-			findMods(executor, pipeline);
+			findMods(context, executor, pipeline);
 		} catch (HttpTimeoutException ex) {
 			pipeline.addIssue(ModLoadingIssue.warning("Pack Sync update server timed out!").withCause(ex));
 		} catch (Exception ex) {

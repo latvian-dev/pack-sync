@@ -2,10 +2,10 @@ package dev.latvian.mods.packsync;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
-import dev.latvian.mods.packsync.repackaged.nbt.NBTByte;
-import dev.latvian.mods.packsync.repackaged.nbt.NBTCompoundTag;
-import dev.latvian.mods.packsync.repackaged.nbt.NBTList;
-import dev.latvian.mods.packsync.repackaged.nbt.NBTString;
+import dev.latvian.apps.nbt.NBTByte;
+import dev.latvian.apps.nbt.NBTCompoundTag;
+import dev.latvian.apps.nbt.NBTList;
+import dev.latvian.apps.nbt.NBTString;
 
 import java.util.ArrayList;
 import java.util.List;

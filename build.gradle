@@ -59,12 +59,12 @@ neoForge {
 
 compileJava {
 	options.encoding = "UTF-8"
-	options.release.set(21)
+	options.release.set(25)
 	options.compilerArgs << '-parameters' << '-Xmaxerrs' << '1000'
 }
 
 java {
-	sourceCompatibility = targetCompatibility = '21'
+	sourceCompatibility = targetCompatibility = '25'
 	withSourcesJar()
 }
 
@@ -97,14 +97,12 @@ repositories {
 }
 
 dependencies {
-	/* not possible until 1.21.10+
-	additionalRuntimeClasspath(jarJar(implementation('dev.latvian.apps:nbt'))) {
+	jarJar(implementation('dev.latvian.apps:nbt')) {
 		version {
 			strictly "[$nbt_version,)"
 			prefer "$nbt_version"
 		}
 	}
-	 */
 }
 
 processResources {
