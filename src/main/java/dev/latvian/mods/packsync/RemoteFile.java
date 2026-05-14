@@ -1,7 +1,7 @@
 package dev.latvian.mods.packsync;
 
 import com.google.gson.JsonObject;
-import net.neoforged.neoforgespi.IIssueReporting;
+import dev.latvian.mods.packsync.platform.PackSyncPlatformContext;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -25,7 +25,7 @@ public record RemoteFile(
 		);
 	}
 
-	public boolean replace(Path path, IIssueReporting issues) {
-		return lazy ? Files.notExists(path) : !fileInfo.isEqual(path, issues);
+	public boolean replace(PackSyncPlatformContext context, Path path) {
+		return lazy ? Files.notExists(path) : !fileInfo.isEqual(context, path);
 	}
 }

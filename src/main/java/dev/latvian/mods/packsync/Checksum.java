@@ -1,7 +1,7 @@
 package dev.latvian.mods.packsync;
 
-import net.neoforged.fml.ModLoadingIssue;
-import net.neoforged.neoforgespi.IIssueReporting;
+import dev.latvian.mods.packsync.platform.Issue;
+import dev.latvian.mods.packsync.platform.PackSyncPlatformContext;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -28,7 +28,7 @@ public interface Checksum {
 		return ByteBuffer.allocate(Math.min(maxBufferSize, (int) Math.min(Integer.MAX_VALUE, fileSize)));
 	}
 
-	static String checksum(Path path, String algorithm, IIssueReporting issues) {
+	static String checksum(PackSyncPlatformContext context, Path path, String algorithm) {
 		if (Files.notExists(path)) {
 			return "";
 		}
@@ -45,17 +45,17 @@ public interface Checksum {
 
 			return toHex(md.digest());
 		} catch (Exception ex) {
-			issues.addIssue(ModLoadingIssue.error("Failed to read checksum of file %s!", path.getFileName().toString()).withCause(ex).withAffectedPath(path));
+			context.addIssue(Issue.error("Failed to read checksum of file %s!", path.getFileName().toString()).cause(ex).path(path));
 		}
 
 		return "";
 	}
 
-	static String md5(Path path, IIssueReporting issues) {
-		return checksum(path, "MD5", issues);
+	static String md5(PackSyncPlatformContext context, Path path) {
+		return checksum(context, path, "MD5");
 	}
 
-	static String sha512(Path path, IIssueReporting issues) {
-		return checksum(path, "SHA-512", issues);
+	static String sha512(PackSyncPlatformContext context, Path path) {
+		return checksum(context, path, "SHA-512");
 	}
 }

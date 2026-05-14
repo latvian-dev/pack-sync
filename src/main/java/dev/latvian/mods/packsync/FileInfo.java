@@ -1,7 +1,7 @@
 package dev.latvian.mods.packsync;
 
 import com.google.gson.JsonObject;
-import net.neoforged.neoforgespi.IIssueReporting;
+import dev.latvian.mods.packsync.platform.PackSyncPlatformContext;
 import org.jetbrains.annotations.NotNull;
 
 import java.nio.file.Path;
@@ -25,8 +25,8 @@ public record FileInfo(
 		this("", filename, size, Artifact.NONE);
 	}
 
-	public boolean isEqual(Path path, IIssueReporting issues) {
-		return size == PackSync.size(path) && checksum.equals(Checksum.md5(path, issues));
+	public boolean isEqual(PackSyncPlatformContext context, Path path) {
+		return size == PackSync.size(path) && checksum.equals(Checksum.md5(context, path));
 	}
 
 	public void write(JsonObject json) {
