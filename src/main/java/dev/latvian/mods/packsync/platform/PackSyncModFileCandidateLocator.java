@@ -32,7 +32,7 @@ public class PackSyncModFileCandidateLocator implements IModFileCandidateLocator
 		@Override
 		public String getDataVersion() {
 			// FIXME: Figure out how to get SharedConstants.getCurrentVersion().getDataVersion().getVersion()
-			return "4325";
+			return "4790";
 		}
 
 		@Override

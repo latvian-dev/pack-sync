@@ -55,7 +55,7 @@ public class PackSync {
 		.build();
 
 	public static String getPlatform() {
-		String s = System.getProperty("os.name").toLowerCase(Locale.ROOT);
+		String s = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
 		if (s.contains("win")) {
 			return "windows";
 		} else if (s.contains("mac")) {
@@ -429,6 +429,8 @@ public class PackSync {
 		requestJson.addProperty("mc_version", context.getMinecraftVersion());
 		requestJson.addProperty("loader_version", context.getLoaderVersion());
 		requestJson.addProperty("platform", platform);
+		requestJson.addProperty("platform_arch", System.getProperty("os.arch", ""));
+		requestJson.addProperty("platform_version", System.getProperty("os.version", ""));
 		requestJson.addProperty("dev", context.isDev());
 		requestJson.addProperty("server", isServer);
 
