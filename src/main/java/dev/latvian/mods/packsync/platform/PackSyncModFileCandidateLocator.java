@@ -21,12 +21,12 @@ public class PackSyncModFileCandidateLocator implements IModFileCandidateLocator
 
 		@Override
 		public String getMinecraftVersion() {
-			return context.getVersions().mcVersion();
+			return FMLLoader.versionInfo().mcVersion();
 		}
 
 		@Override
 		public String getLoaderVersion() {
-			return context.getVersions().neoFormVersion() + "/" + context.getVersions().neoForgeVersion();
+			return FMLLoader.versionInfo().neoFormVersion() + "/" + FMLLoader.versionInfo().neoForgeVersion();
 		}
 
 		@Override
@@ -37,12 +37,12 @@ public class PackSyncModFileCandidateLocator implements IModFileCandidateLocator
 
 		@Override
 		public boolean isDev() {
-			return !FMLLoader.getCurrent().isProduction();
+			return !FMLLoader.isProduction();
 		}
 
 		@Override
 		public boolean isServer() {
-			return context.getRequiredDistribution().isDedicatedServer();
+			return FMLLoader.getDist().isDedicatedServer();
 		}
 
 		@Override

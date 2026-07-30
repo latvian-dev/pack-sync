@@ -59,12 +59,12 @@ neoForge {
 
 compileJava {
 	options.encoding = "UTF-8"
-	options.release.set(25)
+	options.release.set(21)
 	options.compilerArgs << '-parameters' << '-Xmaxerrs' << '1000'
 }
 
 java {
-	sourceCompatibility = targetCompatibility = '25'
+	sourceCompatibility = targetCompatibility = '21'
 	withSourcesJar()
 }
 
