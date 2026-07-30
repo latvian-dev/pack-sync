@@ -7,6 +7,7 @@ import dev.latvian.apps.nbt.NBTCompoundTag;
 import dev.latvian.apps.nbt.NBTList;
 import dev.latvian.mods.packsync.platform.Issue;
 import dev.latvian.mods.packsync.platform.PackSyncPlatformContext;
+import org.apache.commons.io.FileUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,6 +29,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -50,7 +52,7 @@ public class PackSync {
 	public static final Logger LOGGER = LoggerFactory.getLogger("PackSync");
 
 	public static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
-		.connectTimeout(Duration.ofSeconds(60L))
+		.connectTimeout(Duration.ofMinutes(30L))
 		.followRedirects(HttpClient.Redirect.ALWAYS)
 		.build();
 
@@ -104,10 +106,11 @@ public class PackSync {
 		}
 	}
 
-	private static boolean download(PackSyncPlatformContext context, HttpRequest.Builder requestBuilderBase, Path path, String fileName, long size, URI uri, boolean gzip) {
+	private static boolean download(PackSyncPlatformContext context, HttpRequest.Builder requestBuilderBase, Path path, String fileName, RemoteFile remoteFile, URI uri) {
 		var actualFileName = fileName.isEmpty() ? path.getFileName().toString() : fileName;
 
 		try {
+			var size = remoteFile.fileInfo().size();
 			LOGGER.info("Downloading " + actualFileName + " from " + uri + (size > 0L ? " [%,d bytes]...".formatted(size) : "..."));
 			var response = HTTP_CLIENT.send(requestBuilderBase.copy().uri(uri).build(), HttpResponse.BodyHandlers.ofInputStream());
 
@@ -122,7 +125,7 @@ public class PackSync {
 				Files.createDirectories(parent);
 			}
 
-			try (var in = gzip(response.body(), gzip); var out = new BufferedOutputStream(Files.newOutputStream(path))) {
+			try (var in = gzip(response.body(), remoteFile.gzip()); var out = new BufferedOutputStream(Files.newOutputStream(path))) {
 				in.transferTo(out);
 				return true;
 			}
@@ -133,11 +136,30 @@ public class PackSync {
 	}
 
 	private static boolean delete(PackSyncPlatformContext context, Path path, String fileName) {
+		if (Files.notExists(path)) {
+			return true;
+		}
+
 		var actualFileName = fileName.isEmpty() ? path.getFileName().toString() : fileName;
 
 		try {
-			LOGGER.info("Deleting " + actualFileName + " [%,d bytes]...".formatted(Files.exists(path) ? Files.size(path) : 0L));
-			Files.deleteIfExists(path);
+			if (Files.isDirectory(path)) {
+				try (var stream = Files.walk(path)) {
+					for (var file : stream.sorted(Comparator.reverseOrder()).toList()) {
+						if (Files.isDirectory(file)) {
+							LOGGER.info("Deleting " + file.getFileName() + " [directory]...");
+						} else {
+							LOGGER.info("Deleting " + file.getFileName() + " [%,d bytes]...".formatted(Files.size(file)));
+						}
+
+						Files.delete(file);
+					}
+				}
+			} else {
+				LOGGER.info("Deleting " + actualFileName + " [%,d bytes]...".formatted(Files.size(path)));
+				Files.delete(path);
+			}
+
 			return true;
 		} catch (Exception ex) {
 			context.addIssue(Issue.error("Failed to delete %s!", actualFileName).cause(ex).path(path));
@@ -149,7 +171,7 @@ public class PackSync {
 		long startTime = System.currentTimeMillis();
 		PackSync.LOGGER.info("Loading Pack Sync...");
 
-		try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+		try (var executor = Executors.newFixedThreadPool(24)) {
 			PackSync.findMods(context, executor);
 		} catch (HttpTimeoutException ex) {
 			context.addIssue(Issue.warning("Pack Sync update server timed out!").cause(ex));
@@ -342,7 +364,7 @@ public class PackSync {
 
 		var packToken = config.has("pack_token") ? config.get("pack_token").getAsString() : "";
 
-		var requestBuilderBase = HttpRequest.newBuilder().timeout(Duration.ofSeconds(60L)).header("User-Agent", "dev.latvian.mods.packsync/1.0");
+		var requestBuilderBase = HttpRequest.newBuilder().header("User-Agent", "dev.latvian.mods.packsync/1.0");
 
 		if (!packToken.isEmpty()) {
 			requestBuilderBase.header("Authorization", "Bearer " + packToken);
@@ -438,6 +460,8 @@ public class PackSync {
 		supportedFeatures.add("gzip");
 		supportedFeatures.add("server_list");
 		supportedFeatures.add("session");
+		// supportedFeatures.add("extract");
+		supportedFeatures.add("clone_paths");
 
 		if (!isServer) {
 			loadSupportedClientFeatures(supportedFeatures);
@@ -497,7 +521,7 @@ public class PackSync {
 						var ext = exti == -1 ? "" : filename.substring(exti);
 						var downloadPath = dir.resolve(checksum + ext);
 
-						if (repositoryFile != null || download(context, requestBuilderBase, downloadPath, filename + " (" + checksum + ")", remoteFile.fileInfo().size(), api.resolve(remoteFile.url()), remoteFile.gzip())) {
+						if (repositoryFile != null || download(context, requestBuilderBase, downloadPath, filename + " (" + checksum + ")", remoteFile, api.resolve(remoteFile.url()))) {
 							var file = new RepositoryFile(downloadPath, remoteFile.fileInfo());
 							repositoryFiles.put(file.fileInfo().checksum(), file);
 
@@ -544,7 +568,32 @@ public class PackSync {
 						if (file.fileInfo().size() == 0L && file.fileInfo().filename().equals("deleted")) {
 							delete(context, path, relPath.toString());
 						} else {
-							download(context, requestBuilderBase, path, relPath.toString(), file.fileInfo().size(), api.resolve(file.url()), file.gzip());
+							download(context, requestBuilderBase, path, relPath.toString(), file, api.resolve(file.url()));
+
+							for (var p : file.clonePaths()) {
+								var cPath = gameDir.resolve(p);
+
+								if (!cPath.startsWith(gameDir)) {
+									context.addIssue(Issue.error("Pack Sync attempted to update file outside game directory!").path(cPath));
+									errors.incrementAndGet();
+								}
+
+								if (delete(context, cPath, "")) {
+									try {
+										LOGGER.info("Cloning " + file.path() + " to " + p + "...");
+
+										if (Files.isDirectory(path)) {
+											FileUtils.copyDirectory(path.toFile(), cPath.toFile());
+										} else {
+											Files.copy(path, cPath);
+										}
+
+										LOGGER.info("Cloned " + file.path() + " to " + p);
+									} catch (Exception ex) {
+										context.addIssue(Issue.error("Failed to clone " + file.path() + " to " + p + "!").path(cPath));
+									}
+								}
+							}
 						}
 					}
 				}, executor));
@@ -558,7 +607,7 @@ public class PackSync {
 				var path = gameDir.resolve("server-icon.png");
 
 				if (file.replace(context, path)) {
-					download(context, requestBuilderBase, path, "server-icon.png", file.fileInfo().size(), api.resolve(file.url()), file.gzip());
+					download(context, requestBuilderBase, path, "server-icon.png", file, api.resolve(file.url()));
 				}
 			}, executor));
 		}
