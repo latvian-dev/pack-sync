@@ -195,48 +195,69 @@ public class PackSync {
 			}
 		}
 
-		var localConfigFile = localPackSyncDirectory.resolve("config.json");
+		boolean saveLocalConfig = false;
+		boolean pauseUpdates = false;
+		var knownArtifacts = new HashSet<String>();
+		var disabledArtifacts = new HashSet<String>();
 
-		JsonObject localConfigJson;
+		var oldLocalConfigFile = localPackSyncDirectory.resolve("config.json");
+		var localConfigFile = localPackSyncDirectory.resolve("config.yml");
 
-		if (Files.notExists(localConfigFile)) {
-			localConfigJson = new JsonObject();
-		} else {
-			try (var reader = Files.newBufferedReader(localConfigFile)) {
-				localConfigJson = gson.fromJson(reader, JsonObject.class);
+		if (Files.exists(localConfigFile)) {
+			try {
+				var map = new LinkedHashMap<String, String>();
+
+				for (var line : Files.readAllLines(localConfigFile)) {
+					if (line.isEmpty() || line.startsWith("#")) {
+						continue;
+					}
+
+					var l = line.split(":", 2);
+
+					if (l.length == 2) {
+						map.putFirst(l[0].trim(), l[1].trim());
+					}
+				}
+
+				pauseUpdates = "true".equals(map.remove("pause_updates"));
+
+				for (var e : map.entrySet()) {
+					var artifact = e.getKey();
+					knownArtifacts.add(artifact);
+
+					if (!"true".equals(e.getValue())) {
+						disabledArtifacts.add(artifact);
+					}
+				}
 			} catch (Exception ex) {
 				context.addIssue(Issue.error("Failed to read Pack Sync local config file!").cause(ex).path(localConfigFile));
 				return;
 			}
-		}
+		} else {
+			saveLocalConfig = true;
 
-		{
-			boolean updateLocalConfigJson = false;
+			if (Files.exists(oldLocalConfigFile)) {
+				try (var reader = Files.newBufferedReader(oldLocalConfigFile)) {
+					var json = gson.fromJson(reader, JsonObject.class);
+					pauseUpdates = json.has("pause_updates") && json.get("pause_updates").getAsBoolean();
 
-			if (!localConfigJson.has("pause_updates")) {
-				localConfigJson.addProperty("pause_updates", false);
-				updateLocalConfigJson = true;
-			}
+					if (json.has("ignored_mods")) {
+						for (var mod : json.get("ignored_mods").getAsJsonArray()) {
+							knownArtifacts.add(mod.getAsString());
+							disabledArtifacts.add(mod.getAsString());
+						}
+					} else if (json.has("disabled_artifacts")) {
+						for (var entry : json.get("disabled_artifacts").getAsJsonObject().entrySet()) {
+							knownArtifacts.add(entry.getKey());
 
-			if (!localConfigJson.has("disabled_artifacts")) {
-				localConfigJson.add("disabled_artifacts", new JsonObject());
-				updateLocalConfigJson = true;
-			}
-
-			if (localConfigJson.has("ignored_mods")) {
-				var obj = localConfigJson.getAsJsonObject("disabled_artifacts");
-
-				for (var mod : localConfigJson.get("ignored_mods").getAsJsonArray()) {
-					obj.addProperty(mod.getAsString(), true);
-				}
-
-				localConfigJson.remove("ignored_mods");
-				updateLocalConfigJson = true;
-			}
-
-			if (updateLocalConfigJson) {
-				try (var writer = Files.newBufferedWriter(localConfigFile)) {
-					gson.toJson(localConfigJson, writer);
+							if (entry.getValue().getAsBoolean()) {
+								disabledArtifacts.add(entry.getKey());
+							}
+						}
+					}
+				} catch (Exception ex) {
+					context.addIssue(Issue.error("Failed to read Pack Sync local config file!").cause(ex).path(oldLocalConfigFile));
+					return;
 				}
 			}
 		}
@@ -313,32 +334,31 @@ public class PackSync {
 
 		var api = URI.create(api0);
 
-		var packCode = config.get("pack_code").getAsString();
+		var packCode = config.has("pack_code") ? config.get("pack_code").getAsString() : "";
 		var packId = config.has("pack_id") ? config.get("pack_id").getAsString() : packCode;
 
 		System.setProperty("dev.latvian.mods.packsync.id", packId);
 		System.setProperty("dev.latvian.mods.packsync.code", packCode);
 
-		var auth = localConfigJson.has("auth") ? localConfigJson.get("auth").getAsString() : "%PACK_SYNC_TOKEN%";
-
-		while (auth.length() >= 3 && auth.startsWith("%") && auth.endsWith("%")) {
-			auth = Optional.ofNullable(System.getenv(auth.substring(1, auth.length() - 1))).orElse("");
-		}
+		var packToken = config.has("pack_token") ? config.get("pack_token").getAsString() : "";
 
 		var requestBuilderBase = HttpRequest.newBuilder().timeout(Duration.ofSeconds(60L)).header("User-Agent", "dev.latvian.mods.packsync/1.0");
 
-		if (!auth.isEmpty()) {
-			requestBuilderBase.header("Authorization", "Bearer " + auth);
+		if (!packToken.isEmpty()) {
+			requestBuilderBase.header("Authorization", "Bearer " + packToken);
 		}
 
 		String sessionId;
 		String newVersion;
 
 		try {
-			var versionRequest = HTTP_CLIENT.send(requestBuilderBase.copy().uri(api.resolve("version/" + URLEncoder.encode(packCode, StandardCharsets.UTF_8))).GET().build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+			var versionUri = packToken.isEmpty() ? api.resolve("version/" + URLEncoder.encode(packCode, StandardCharsets.UTF_8)) : api.resolve("version");
+			var versionRequest = HTTP_CLIENT.send(requestBuilderBase.copy().uri(versionUri).GET().build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
 			sessionId = versionRequest.headers().firstValue("X-Pack-Sync-Session-ID").orElse("");
 			packId = versionRequest.headers().firstValue("X-Pack-Sync-Pack-ID").orElse(packId);
+			packCode = versionRequest.headers().firstValue("X-Pack-Sync-Pack-Code").orElse(packCode);
 			System.setProperty("dev.latvian.mods.packsync.id", packId);
+			System.setProperty("dev.latvian.mods.packsync.code", packCode);
 
 			if (versionRequest.statusCode() / 100 != 2) {
 				context.addIssue(Issue.warning("Failed to update the modpack with error %d - %s!", versionRequest.statusCode(), versionRequest.body()));
@@ -383,24 +403,12 @@ public class PackSync {
 			}
 		}
 
-		var knownArtifacts = new HashSet<String>();
-		var disabledArtifacts = new HashSet<String>();
-
-		for (var e : localConfigJson.get("disabled_artifacts").getAsJsonObject().entrySet()) {
-			var key = e.getKey();
-			knownArtifacts.add(key);
-
-			if (e.getValue().getAsBoolean()) {
-				disabledArtifacts.add(key);
-			}
-		}
-
 		if (!packVersion.isEmpty() && !checkModsExist(repositoryFiles, modList, disabledArtifacts)) {
 			LOGGER.info("Found missing or broken repository files, forcing an update...");
 			packVersion = "";
 		}
 
-		if (!packVersion.isEmpty() && localConfigJson.get("pause_updates").getAsBoolean()) {
+		if (!packVersion.isEmpty() && pauseUpdates) {
 			LOGGER.info("Pack updates are paused ('" + packVersion + "')!");
 			loadMods(context, repositoryFiles, modList, disabledArtifacts);
 			return;
@@ -435,7 +443,8 @@ public class PackSync {
 
 		requestJson.add("supported_features", supportedFeatures);
 
-		var syncRequest = HTTP_CLIENT.send(requestBuilderBase.copy().uri(api.resolve("sync/" + URLEncoder.encode(packCode, StandardCharsets.UTF_8))).POST(HttpRequest.BodyPublishers.ofString(requestJson.toString(), StandardCharsets.UTF_8)).build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+		var syncUri = packToken.isEmpty() ? api.resolve("sync/" + URLEncoder.encode(packCode, StandardCharsets.UTF_8)) : api.resolve("sync");
+		var syncRequest = HTTP_CLIENT.send(requestBuilderBase.copy().uri(syncUri).POST(HttpRequest.BodyPublishers.ofString(requestJson.toString(), StandardCharsets.UTF_8)).build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
 
 		if (syncRequest.statusCode() / 100 != 2) {
 			context.addIssue(Issue.warning("Failed to update the modpack with error %d - %s!", syncRequest.statusCode(), syncRequest.body()));
@@ -738,17 +747,28 @@ public class PackSync {
 		}
 
 		if (!knownArtifacts.equals(newKnownArtifacts)) {
-			var obj = new JsonObject();
+			saveLocalConfig = true;
+		}
 
-			for (var key : newKnownArtifacts.stream().sorted(String.CASE_INSENSITIVE_ORDER).toList()) {
-				obj.addProperty(key, disabledArtifacts.contains(key));
+		if (saveLocalConfig) {
+			var list = newKnownArtifacts.stream().sorted(String.CASE_INSENSITIVE_ORDER).toList();
+			int len = "pause_updates".length();
+
+			for (var key : list) {
+				len = Math.max(len, key.length());
 			}
 
-			localConfigJson.add("disabled_artifacts", obj);
+			var result = new ArrayList<String>();
+			result.add("# Config");
+			result.add("pause_updates: " + " ".repeat(Math.max(0, len - "pause_updates".length())) + pauseUpdates);
+			result.add("# Enabled Artifacts");
 
-			try (var writer = Files.newBufferedWriter(localConfigFile)) {
-				gson.toJson(localConfigJson, writer);
+			for (var artifact : list) {
+				result.add(artifact + ": " + " ".repeat(Math.max(0, len - artifact.length())) + !disabledArtifacts.contains(artifact));
 			}
+
+			Files.write(localConfigFile, result);
+			Files.deleteIfExists(oldLocalConfigFile);
 		}
 
 		LOGGER.info("Pack updated '" + packVersion + "' -> '" + newVersion + "'!");
