@@ -753,7 +753,9 @@ public class PackSync {
 		}
 
 		if (saveLocalConfig) {
-			var list = newKnownArtifacts.stream().sorted(String.CASE_INSENSITIVE_ORDER).toList();
+			var set = new HashSet<>(newKnownArtifacts);
+			set.addAll(disabledArtifacts);
+			var list = set.stream().sorted(String.CASE_INSENSITIVE_ORDER).toList();
 			int len = "pause_updates".length();
 
 			for (var key : list) {
