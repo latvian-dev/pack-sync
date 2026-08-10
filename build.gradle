@@ -81,26 +81,10 @@ repositories {
 	}
 
 	maven {
-		url = 'https://maven.latvian.dev/releases'
-		content {
-			includeGroup "dev.latvian.apps"
-		}
-	}
-
-	maven {
 		name = 'ParchmentMC'
 		url = 'https://maven.parchmentmc.org'
 		content {
 			includeGroup "org.parchmentmc.data"
-		}
-	}
-}
-
-dependencies {
-	jarJar(implementation('dev.latvian.apps:nbt')) {
-		version {
-			strictly "[$nbt_version,)"
-			prefer "$nbt_version"
 		}
 	}
 }
