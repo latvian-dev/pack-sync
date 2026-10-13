@@ -2,10 +2,10 @@ import java.time.Instant
 
 plugins {
 	id 'base'
-	id 'java'
-	id 'idea'
+	id 'java-library'
 	id 'maven-publish'
-	id 'net.neoforged.moddev' version "2.0.141"
+	id 'net.neoforged.moddev' version '2.0.148'
+	id 'idea'
 }
 
 var ENV = System.getenv()
@@ -14,7 +14,10 @@ var isLocal = !ENV.containsKey("GITHUB_RUN_NUMBER")
 
 version = "${mod_version}-${isLocal ? "local.${Instant.now().epochSecond}" : "build.${ENV.GITHUB_RUN_NUMBER}"}"
 group = project.maven_group
-base.archivesName = project.archives_base_name
+
+base {
+	archivesName = project.archives_base_name
+}
 
 println("Building version: $version")
 
@@ -64,12 +67,25 @@ compileJava {
 }
 
 java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(25)
+	}
+
 	sourceCompatibility = targetCompatibility = '25'
 	withSourcesJar()
+	withJavadocJar()
 }
 
 configurations {
 	runtimeClasspath.extendsFrom localRuntime
+}
+
+tasks.withType(JavaCompile).configureEach {
+	options.encoding = 'UTF-8'
+}
+
+tasks.withType(Javadoc) {
+	options.addStringOption('Xdoclint:none', '-quiet')
 }
 
 repositories {
